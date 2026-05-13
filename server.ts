@@ -21,9 +21,27 @@ app.use(rateLimit({
 const cache = new Map<string, { data: any; expiresAt: number }>();
 
 function normalizeUrl(raw: string): string {
-  const trimmed = raw.trim();
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  return `https://${trimmed}`;
+  let input = raw.trim().toLowerCase();
+
+  if (!/^https?:\/\//i.test(input)) {
+    input = `https://${input}`;
+  }
+
+  try {
+    const url = new URL(input);
+
+    // normalize hostname
+    url.hostname = url.hostname.toLowerCase();
+
+    // remove trailing slash from pathname
+    if (url.pathname.endsWith('/') && url.pathname !== '/') {
+      url.pathname = url.pathname.slice(0, -1);
+    }
+
+    return url.toString();
+  } catch {
+    throw new Error('Invalid URL');
+  }
 }
 
 function toInt(score: number | null | undefined): number {
