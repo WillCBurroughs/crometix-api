@@ -44,10 +44,67 @@ function normalizeUrl(raw: string): string {
   }
 }
 
+const BRANDFETCH_CLIENT_ID = process.env.BRANDFETCH_CLIENT_ID;
+
 function toInt(score: number | null | undefined): number {
   if (score == null) return 0;
   return Math.round(score * 100);
 }
+
+function getBrandfetchLogoUrl(hostname: string): string {
+  if (!BRANDFETCH_CLIENT_ID) {
+    throw new Error('Missing BRANDFETCH_CLIENT_ID');
+  }
+  return `https://cdn.brandfetch.io/${hostname}?c=${encodeURIComponent(BRANDFETCH_CLIENT_ID)}`;
+}
+
+app.get('/brandfetch/logo', async (req, res) => {
+  try {
+    const rawUrl = req.query.url;
+
+    if (!rawUrl || typeof rawUrl !== 'string') {
+      return res.status(400).json({ error: 'Missing URL query parameter' });
+    }
+
+    const targetUrl = normalizeUrl(rawUrl);
+    const hostname = new URL(targetUrl).hostname;
+    const cacheKey = `brandfetch:${hostname}`;
+    const cached = cache.get(cacheKey);
+
+    if (cached && cached.expiresAt > Date.now()) {
+      res.set('Content-Type', cached.data.contentType);
+      return res.send(cached.data.buffer);
+    }
+
+    const logoUrl = getBrandfetchLogoUrl(hostname);
+    const response = await fetch(logoUrl);
+
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(response.status).json({
+        error: 'Brandfetch logo request failed',
+        details: text,
+      });
+    }
+
+    const contentType = response.headers.get('content-type') || 'image/png';
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    cache.set(cacheKey, {
+      data: {
+        buffer,
+        contentType,
+      },
+      expiresAt: Date.now() + 1000 * 60 * 60 * 24,
+    });
+
+    res.set('Content-Type', contentType);
+    return res.send(buffer);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Logo retrieval failed' });
+  }
+});
 
 app.post('/audit', async (req, res) => {
   try {
