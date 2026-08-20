@@ -15,7 +15,7 @@ app.use(express.json());
 
 app.use(rateLimit({
   windowMs: 60 * 1000,
-  max: 20,
+  max: 100,
 }));
 
 const cache = new Map<string, { data: any; expiresAt: number }>();
@@ -49,6 +49,26 @@ const BRANDFETCH_CLIENT_ID = process.env.BRANDFETCH_CLIENT_ID;
 function toInt(score: number | null | undefined): number {
   if (score == null) return 0;
   return Math.round(score * 100);
+}
+
+function extractCrux(data: any) {
+  const pageLcp = data.loadingExperience?.metrics?.LARGEST_CONTENTFUL_PAINT_MS;
+  const originLcp = data.originLoadingExperience?.metrics?.LARGEST_CONTENTFUL_PAINT_MS;
+
+  const source = pageLcp ? 'page' : originLcp ? 'origin' : null;
+  const lcp = pageLcp || originLcp;
+
+  if (!lcp || typeof lcp.percentile !== 'number') {
+    return { available: false, source: null, lcpMs: null, lcpSeconds: null, category: null };
+  }
+
+  return {
+    available: true,
+    source,
+    lcpMs: lcp.percentile,
+    lcpSeconds: Math.round((lcp.percentile / 1000) * 10) / 10,
+    category: lcp.category || null,
+  };
 }
 
 function normalizeBrandfetchDomain(hostname: string): string {
@@ -134,6 +154,68 @@ app.post('/audit', async (req, res) => {
       seo: toInt(categories?.seo?.score),
       accessibility: toInt(categories?.accessibility?.score),
       bestPractices: toInt(categories?.['best-practices']?.score),
+    };
+
+    cache.set(cacheKey, {
+      data: result,
+      expiresAt: Date.now() + 1000 * 60 * 60 * 6,
+    });
+
+    return res.json(result);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Audit failed' });
+  }
+});
+
+app.post('/audit/crux', async (req, res) => {
+  try {
+    const rawUrl = req.body.url;
+
+    if (!rawUrl || typeof rawUrl !== 'string') {
+      return res.status(400).json({ error: 'Missing URL' });
+    }
+
+    const targetUrl = normalizeUrl(rawUrl);
+    new URL(targetUrl);
+
+    const cacheKey = `mobile-crux:${targetUrl}`;
+    const cached = cache.get(cacheKey);
+
+    if (cached && cached.expiresAt > Date.now()) {
+      return res.json({ ...cached.data, cached: true });
+    }
+
+    const apiUrl =
+      `https://www.googleapis.com/pagespeedonline/v5/runPagespeed` +
+      `?url=${encodeURIComponent(targetUrl)}` +
+      `&strategy=mobile` +
+      `&category=performance` +
+      `&category=seo` +
+      `&category=accessibility` +
+      `&category=best-practices` +
+      `&key=${process.env.GOOGLE_PAGESPEED_API_KEY}`;
+
+    const response = await fetch(apiUrl);
+
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(response.status).json({
+        error: 'PageSpeed API failed',
+        details: text,
+      });
+    }
+
+    const data = await response.json();
+    const categories = data.lighthouseResult?.categories;
+
+    const result = {
+      url: targetUrl,
+      performance: toInt(categories?.performance?.score),
+      seo: toInt(categories?.seo?.score),
+      accessibility: toInt(categories?.accessibility?.score),
+      bestPractices: toInt(categories?.['best-practices']?.score),
+      crux: extractCrux(data),
     };
 
     cache.set(cacheKey, {
